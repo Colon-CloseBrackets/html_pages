@@ -79,7 +79,7 @@
   let panZoom, svgEl;
 
   // Load SVG
-  const res = await fetch('28L_SitePlan_02.svg');
+  const res = await fetch('28L_SitePlan_03.svg');
   if(!res.ok){ viewer.innerHTML = '<div style="padding:20px;color:#b00;">Failed to load SVG.</div>'; return; }
   const svgText = await res.text();
   viewer.insertAdjacentHTML('beforeend', svgText);
