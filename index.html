@@ -1,11 +1,9 @@
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Plan Viewer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plan Viewer (Measure + Fixed)</title>
 
 <!-- Pan/Zoom library -->
 <script src="https://unpkg.com/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
@@ -17,10 +15,10 @@
     --accent:#0b6ef3;
   }
   html,body{height:100%;margin:0;background:#f5f5f7;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
-  header{padding:12px 16px;display:flex;gap:8px;align-items:center}
+  header{padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .btn{appearance:none;border:1px solid var(--ui-border);background:#fff;padding:8px 12px;border-radius:10px;cursor:pointer;box-shadow:var(--shadow)}
   .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .wrap{height:calc(100% - 60px);display:grid;grid-template-columns:300px 1fr;gap:12px;padding:0 16px 16px}
+  .wrap{height:calc(100% - 64px);display:grid;grid-template-columns:300px 1fr;gap:12px;padding:0 16px 16px}
   .panel{background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;overflow:auto}
   .viewer{position:relative;background:#fff;border:1px solid var(--ui-border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
   .viewer.transparent{background:transparent}
@@ -36,6 +34,9 @@
   .bar::before,.bar::after{content:"";position:absolute;top:-6px;width:1px;height:18px;background:#000}
   .bar::before{left:0}.bar::after{right:0}
   .viewer:fullscreen,.viewer:-webkit-full-screen{width:100vw;height:100vh;border:none;border-radius:0}
+  /* Measure HUD */
+  .hud{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:10px;padding:6px 10px;font-size:12px;box-shadow:var(--shadow);z-index:6;display:none}
+  .hud.show{display:block}
 </style>
 </head>
 <body>
@@ -44,6 +45,9 @@
   <button class="btn" id="btn-fullscreen">Full screen</button>
   <button class="btn" id="reset-view">Reset view</button>
   <button class="btn" id="bg-toggle">Background: White</button>
+  <button class="btn" id="measure">Measure</button>
+  <button class="btn" id="measure-clear">Clear</button>
+  <button class="btn" id="measure-calibrate">Calibrate</button>
   <div style="margin-left:auto;font-size:12px;color:#666">Scroll to zoom • Drag to pan • Double-click to zoom</div>
 </header>
 
@@ -57,6 +61,8 @@
   </aside>
 
   <main class="viewer" id="viewer">
+    <!-- Measure HUD -->
+    <div class="hud" id="hud">Measure: click to add points • Enter/dbl‑click to finish • Esc to cancel • Backspace to undo</div>
     <!-- Scale overlay -->
     <div class="overlay">
       <div class="scale">
@@ -71,22 +77,22 @@
 <script>
 (async function(){
   // ========= Config =========
-const UNITS_PER_METER = 154.99;     // your measured value
-window._UNITS_PER_METER = UNITS_PER_METER; // ensure runtime uses it
+  const UNITS_PER_METER = 40.96;  // <-- set to your measured SVG-units per meter
+  window._UNITS_PER_METER = UNITS_PER_METER; // mirror to runtime
 
   const viewer = document.getElementById('viewer');
   const layersEl = document.getElementById('layers');
   const scaleBar = document.getElementById('scale-bar');
   const scaleLabel = document.getElementById('scale-label');
+  const hud = document.getElementById('hud');
   let panZoom, svgEl;
 
-  // Fetch & inline your SVG (linked images load because they’re same-origin)
+  // Fetch & inline your SVG
   const res = await fetch('28L_SitePlan_02.svg');
   if(!res.ok){ viewer.innerHTML = '<div style="padding:20px;color:#b00;">Failed to load SVG.</div>'; return; }
   const svgText = await res.text();
   viewer.insertAdjacentHTML('beforeend', svgText);
 
-  // Ensure a stable id for scripting
   svgEl = viewer.querySelector('svg');
   if(!svgEl){ viewer.innerHTML = '<div style="padding:20px;color:#b00;">No &lt;svg&gt; found.</div>'; return; }
   if(!svgEl.id) svgEl.id = 'svgRoot';
@@ -97,9 +103,10 @@ window._UNITS_PER_METER = UNITS_PER_METER; // ensure runtime uses it
     fit:true, center:true, minZoom:0.1, maxZoom:50,
     onZoom:updateScaleBar, onPan:updateScaleBar
   });
-  panZoom.zoomBy(1); // kick layout
+  panZoom.zoomBy(1);
+  updateScaleBar();
 
-  // Build layer panel from true Inkscape layers
+  // Build layer panel
   buildLayerPanel();
 
   // UI buttons
@@ -109,9 +116,181 @@ window._UNITS_PER_METER = UNITS_PER_METER; // ensure runtime uses it
   document.getElementById('hide-all').onclick = () => setAllLayersVisible(false);
   document.getElementById('bg-toggle').onclick = toggleBackground;
 
-  updateScaleBar();
+  // ==== Measure tool state ====
+  let measureOn = false;
+  let pts = [];
+  let measureGroup = null;
+  let poly = null;
+  let dots = [];
+  let label = null;
+  let liveSeg = null;
 
-  // ======= Functions =======
+  document.getElementById('measure').onclick = () => {
+    measureOn = !measureOn;
+    document.getElementById('measure').textContent = measureOn ? 'Measure (ON)' : 'Measure';
+    hud.classList.toggle('show', measureOn);
+    if (measureOn) {
+      panZoom.disablePan();
+      initMeasureOverlay();
+    } else {
+      panZoom.enablePan();
+      cleanupMeasureOverlay();
+    }
+  };
+
+  document.getElementById('measure-clear').onclick = () => {
+    cleanupMeasureOverlay();
+    if (measureOn) initMeasureOverlay();
+  };
+
+  document.getElementById('measure-calibrate').onclick = () => {
+    if (!pts.length) { alert('Click two points first in Measure mode, then press Calibrate.'); return; }
+    if (pts.length < 2) { alert('Need at least two points.'); return; }
+    const du = totalLength(pts);
+    const dm = parseFloat(prompt(`SVG distance: ${du.toFixed(3)} units\\nEnter REAL distance in meters:`) || '0');
+    if (isFinite(dm) && dm>0) {
+      const upm = du / dm;
+      window._UNITS_PER_METER = upm;
+      localStorage.setItem('UNITS_PER_METER', String(upm));
+      alert(`Calibrated UNITS_PER_METER ≈ ${upm.toFixed(6)}\\n(Stored for this browser)`);
+      updateReadout();
+      updateScaleBar();
+    }
+  };
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    if (!measureOn) return;
+    if (e.key === 'Escape') { e.preventDefault(); cleanupMeasureOverlay(); initMeasureOverlay(); }
+    if (e.key === 'Enter')  { e.preventDefault(); finalizeMeasure(); }
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      e.preventDefault();
+      if (pts.length) { pts.pop(); redraw(); updateReadout(); }
+    }
+  });
+
+  // SVG interactions
+  svgEl.addEventListener('click', onSvgClick, {capture:true});
+  svgEl.addEventListener('dblclick', (e)=>{ if(measureOn){ e.preventDefault(); finalizeMeasure(); } }, {capture:true});
+  svgEl.addEventListener('mousemove', onSvgMove, {capture:true});
+
+  function onSvgClick(evt){
+    if(!measureOn) return;
+    const p = clientToSvg(evt);
+    pts.push(p);
+    addDot(p);
+    redraw();
+    updateReadout();
+  }
+  function onSvgMove(evt){
+    if(!measureOn || pts.length===0) return;
+    const p = clientToSvg(evt);
+    const last = pts[pts.length-1];
+    if(!liveSeg){
+      liveSeg = document.createElementNS('http://www.w3.org/2000/svg','line');
+      liveSeg.setAttribute('stroke','#ff0055');
+      liveSeg.setAttribute('stroke-width','1.5');
+      liveSeg.setAttribute('stroke-dasharray','4 3');
+      measureGroup.appendChild(liveSeg);
+    }
+    liveSeg.setAttribute('x1', last.x); liveSeg.setAttribute('y1', last.y);
+    liveSeg.setAttribute('x2', p.x);    liveSeg.setAttribute('y2', p.y);
+    const du = totalLength(pts) + Math.hypot(p.x-last.x, p.y-last.y);
+    setLabelText(du);
+  }
+
+  // === FIXED: convert client coords to root SVG user units using realZoom + pan + bounding box ===
+  function clientToSvg(evt){
+    const rect = svgEl.getBoundingClientRect();
+    const { realZoom } = panZoom.getSizes(); // px per 1 SVG unit
+    const pan = panZoom.getPan();            // pan in px
+    const x = (evt.clientX - rect.left - pan.x) / realZoom;
+    const y = (evt.clientY - rect.top  - pan.y) / realZoom;
+    return { x, y };
+  }
+
+  function initMeasureOverlay(){
+    cleanupMeasureOverlay();
+    measureGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+    measureGroup.setAttribute('id','measure-overlay');
+    // === FIXED: append overlay inside the pan/zoom viewport so it scales/pans with content ===
+    const vp = svgEl.querySelector('.svg-pan-zoom_viewport') || svgEl;
+    vp.appendChild(measureGroup);
+
+    poly = document.createElementNS('http://www.w3.org/2000/svg','polyline');
+    poly.setAttribute('fill','none');
+    poly.setAttribute('stroke','#ff0055');
+    poly.setAttribute('stroke-width','1.5');
+    poly.setAttribute('stroke-dasharray','4 3');
+    measureGroup.appendChild(poly);
+
+    label = document.createElementNS('http://www.w3.org/2000/svg','text');
+    label.setAttribute('x','20'); label.setAttribute('y','30');
+    label.setAttribute('fill','#000');
+    label.setAttribute('font-size','12');
+    label.setAttribute('paint-order','stroke');
+    label.setAttribute('stroke','#fff');
+    label.setAttribute('stroke-width','3');
+    label.textContent = 'Total: 0';
+    measureGroup.appendChild(label);
+
+    pts = []; dots = []; liveSeg = null;
+  }
+
+  function cleanupMeasureOverlay(){
+    if (measureGroup) measureGroup.remove();
+    measureGroup = poly = label = liveSeg = null;
+    dots = []; pts = [];
+  }
+
+  function addDot(p){
+    const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+    c.setAttribute('r', 2.5);
+    c.setAttribute('fill', '#ff0055');
+    c.setAttribute('stroke', '#000'); c.setAttribute('stroke-width', '0.5');
+    measureGroup.appendChild(c);
+    dots.push(c);
+  }
+
+  function redraw(){
+    const ptsStr = pts.map(p => `${p.x},${p.y}`).join(' ');
+    poly.setAttribute('points', ptsStr);
+  }
+
+  function totalLength(arr){
+    let d = 0;
+    for(let i=1;i<arr.length;i++){
+      const a = arr[i-1], b = arr[i];
+      d += Math.hypot(b.x-a.x, b.y-a.y);
+    }
+    return d;
+  }
+
+  function setLabelText(du){
+    const UPM = window._UNITS_PER_METER || UNITS_PER_METER;
+    let txt = `Total: ${du.toFixed(2)} u`;
+    if (UPM && UPM>0) {
+      const m = du / UPM;
+      txt += `  (${m>=1 ? m.toFixed(2)+' m' : (m*100).toFixed(0)+' cm'})`;
+    }
+    label.textContent = txt;
+  }
+
+  function updateReadout(){
+    const du = totalLength(pts);
+    setLabelText(du);
+  }
+
+  function finalizeMeasure(){
+    measureOn = false;
+    document.getElementById('measure').textContent = 'Measure';
+    hud.classList.remove('show');
+    panZoom.enablePan();
+    if (liveSeg){ liveSeg.remove(); liveSeg = null; }
+    updateReadout();
+  }
+
   function toggleFullscreen(){
     if(!document.fullscreenElement){ viewer.requestFullscreen?.(); }
     else { document.exitFullscreen?.(); }
@@ -171,39 +350,34 @@ window._UNITS_PER_METER = UNITS_PER_METER; // ensure runtime uses it
     });
   }
 
- function updateScaleBar(){
-  if(!svgEl || !panZoom) return;
-  const UPM = window._UNITS_PER_METER || UNITS_PER_METER; // prefer runtime override if present
-  const targetPx = 160;                                    // desired visual width
-  const { realZoom } = panZoom.getSizes();                 // px per 1 SVG unit (accounts for viewBox + zoom)
-
-  const units = targetPx / realZoom;                       // how many SVG units fit in targetPx right now
-  const nice = niceNumber(units);                          // 1/2/5×10^n “nice” tick
-
-  // draw bar in pixels (nice SVG units * px-per-unit)
-  scaleBar.style.width = (nice * realZoom) + 'px';
-
-  if (UPM && UPM > 0) {
-    const meters = nice / UPM;                             // convert SVG units → meters
-    scaleLabel.textContent = meters >= 1
-      ? meters.toFixed(2) + ' m'
-      : (meters * 100).toFixed(0) + ' cm';
-  } else {
-    scaleLabel.textContent = (Math.round(nice*1000)/1000) + ' SVG units';
+  function updateScaleBar(){
+    if(!svgEl || !panZoom) return;
+    const UPM = window._UNITS_PER_METER || UNITS_PER_METER;
+    const targetPx = 160;
+    const { realZoom } = panZoom.getSizes(); // px per SVG unit
+    const units = targetPx / realZoom;
+    const nice = niceNumber(units);
+    scaleBar.style.width = (nice * realZoom) + 'px';
+    if(UPM && UPM>0){
+      const meters = nice / UPM;
+      scaleLabel.textContent = meters >= 1 ? meters.toFixed(2)+' m' : (meters*100).toFixed(0)+' cm';
+    } else {
+      scaleLabel.textContent = (Math.round(nice*1000)/1000) + ' SVG units';
+    }
   }
-}
-
   function niceNumber(x){
     const exp = Math.floor(Math.log10(x));
     const f = x / Math.pow(10, exp);
     let n = (f<1.5)?1:(f<3.5)?2:(f<7.5)?5:10;
     return n * Math.pow(10, exp);
   }
-  function formatMeters(m){
-    if(m>=1000) return (m/1000).toFixed(2)+' km';
-    if(m>=1)    return m.toFixed(2)+' m';
-    return (m*100).toFixed(0)+' cm';
+
+  // Restore saved calibration if present
+  const savedUPM = parseFloat(localStorage.getItem('UNITS_PER_METER'));
+  if (isFinite(savedUPM) && savedUPM > 0) {
+    window._UNITS_PER_METER = savedUPM;
   }
+  updateScaleBar();
 })();
 </script>
 </body>
