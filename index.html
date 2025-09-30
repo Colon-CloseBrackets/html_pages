@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plan Viewer (Measure v2)</title>
+<title>Plan Viewer (Measure v3)</title>
 
 <script src="https://unpkg.com/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 
@@ -28,7 +28,7 @@
   .bar::before,.bar::after{content:"";position:absolute;top:-6px;width:1px;height:18px;background:#000}
   .bar::before{left:0}.bar::after{right:0}
   .viewer:fullscreen,.viewer:-webkit-full-screen{width:100vw;height:100vh;border:none;border-radius:0}
-  /* HUD with live numbers */
+  /* HUD */
   .hud{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:10px;padding:6px 10px;font-size:12px;box-shadow:var(--shadow);z-index:6;display:none}
   .hud.show{display:block}
 </style>
@@ -68,7 +68,7 @@
 <script>
 (async function(){
   // ========= Config =========
-  const UNITS_PER_METER = 40.96;
+  const UNITS_PER_METER = 40.96;     // Hardcoded so all users see correct meters
   window._UNITS_PER_METER = UNITS_PER_METER;
 
   const viewer = document.getElementById('viewer');
@@ -91,7 +91,8 @@
   panZoom = svgPanZoom(svgEl, {
     zoomEnabled:true, panEnabled:true, controlIconsEnabled:true,
     fit:true, center:true, minZoom:0.1, maxZoom:50,
-    onZoom:updateScaleBar, onPan:updateScaleBar
+    onZoom:() => { updateScaleBar(); updateLabelView(); },
+    onPan: () => { updateScaleBar(); updateLabelView(); }
   });
   panZoom.zoomBy(1);
   updateScaleBar();
@@ -112,6 +113,7 @@
   let measureGroup = null;
   let poly = null;
   let dots = [];
+  let labelWrap = null;   // wrapper that we scale inversely to keep text readable
   let label = null;
   let liveSeg = null;
 
@@ -137,9 +139,9 @@
     const dm = parseFloat(prompt(`SVG distance: ${du.toFixed(3)} units\\nEnter REAL distance in meters:`) || '0');
     if (isFinite(dm) && dm>0) {
       const upm = du / dm;
+      // Session-only: do NOT persist, to keep hardcoded default for all users
       window._UNITS_PER_METER = upm;
-      localStorage.setItem('UNITS_PER_METER', String(upm));
-      alert(`Calibrated UNITS_PER_METER ≈ ${upm.toFixed(6)}\\n(Stored for this browser)`);
+      alert(`Calibrated (session) UNITS_PER_METER ≈ ${upm.toFixed(6)}\\n(This override is temporary for your browser tab)`);
       updateReadout();
       updateScaleBar();
     }
@@ -151,7 +153,7 @@
     if (e.key === 'Enter')  { e.preventDefault(); finalizeMeasure(); }
     if (e.key === 'Backspace' || e.key === 'Delete') {
       e.preventDefault();
-      if (pts.length) { pts.pop(); redraw(); updateReadout(); }
+      if (pts.length) { pts.pop(); redraw(); updateReadout(); updateLabelView(); }
     }
   });
 
@@ -186,7 +188,7 @@
     moveSvgLabelTo(p);
   }
 
-  // Accurate client -> SVG coords using pan/zoom sizes
+  // Accurate client -> root SVG units
   function clientToSvg(evt){
     const rect = svgEl.getBoundingClientRect();
     const { realZoom } = panZoom.getSizes(); // px per 1 SVG unit
@@ -210,31 +212,26 @@
     poly.setAttribute('stroke-dasharray','4 3');
     measureGroup.appendChild(poly);
 
+    labelWrap = document.createElementNS('http://www.w3.org/2000/svg','g');
     label = document.createElementNS('http://www.w3.org/2000/svg','text');
     label.setAttribute('fill','#000');
     label.setAttribute('font-size','12');
-    label.setAttribute('paint-order','stroke'); // outline for contrast
+    label.setAttribute('paint-order','stroke');
     label.setAttribute('stroke','#fff');
     label.setAttribute('stroke-width','3');
     label.setAttribute('text-anchor','start');
     label.setAttribute('dominant-baseline','ideographic');
-    label.textContent = 'Total: 0';
-    measureGroup.appendChild(label);
+    label.textContent = '0.00 m';
+    labelWrap.appendChild(label);
+    measureGroup.appendChild(labelWrap);
 
     pts = []; dots = []; liveSeg = null;
-    // Start label near top-left of current view
-    const pan = panZoom.getPan();
-    const { realZoom } = panZoom.getSizes();
-    const rect = svgEl.getBoundingClientRect();
-    moveSvgLabelTo({ 
-      x: (10 - pan.x)/realZoom, 
-      y: (30 - pan.y)/realZoom 
-    });
+    updateLabelView();
   }
 
   function cleanupMeasureOverlay(){
     if (measureGroup) measureGroup.remove();
-    measureGroup = poly = label = liveSeg = null;
+    measureGroup = poly = label = labelWrap = liveSeg = null;
     dots = []; pts = [];
     hud.textContent = 'Measure: click to add points • Enter/dbl‑click to finish • Esc to cancel • Backspace to undo';
   }
@@ -268,27 +265,31 @@
     return (UPM && UPM>0) ? (du/UPM) : null;
   }
 
+  function formatMeters(m){
+    return (m>=1) ? (m.toFixed(2)+' m') : ((m*100).toFixed(0)+' cm');
+  }
+
   function setReadouts(du){
     const m = metersFromUnits(du);
-    // SVG label near pointer/last point
-    let txt = `Total: ${du.toFixed(2)} u`;
-    if (m!=null) { txt += `  (${m>=1 ? m.toFixed(2)+' m' : (m*100).toFixed(0)+' cm'})`; }
+    const txt = (m==null) ? '—' : formatMeters(m);
     if (label) label.textContent = txt;
-    // HTML HUD (always visible)
-    hud.textContent = (m!=null)
-      ? `Length: ${m>=1 ? m.toFixed(2)+' m' : (m*100).toFixed(0)+' cm'}  •  (${du.toFixed(2)} units)`
-      : `Length: ${du.toFixed(2)} units`;
+    hud.textContent = 'Length: ' + txt;
   }
 
   function moveSvgLabelTo(p){
-    if(!label) return;
-    label.setAttribute('x', p.x + 10);
-    label.setAttribute('y', p.y - 10);
+    if(!labelWrap) return;
+    const { realZoom } = panZoom.getSizes();
+    // Keep text readable: scale inversely with zoom and offset by 10px, -10px in screen space
+    labelWrap.setAttribute('transform', `translate(${p.x},${p.y}) scale(${1/realZoom}) translate(10,-10)`);
   }
 
   function updateReadout(){
     const du = totalLength(pts);
     setReadouts(du);
+    if (pts.length) moveSvgLabelTo(pts[pts.length-1]);
+  }
+
+  function updateLabelView(){
     if (pts.length) moveSvgLabelTo(pts[pts.length-1]);
   }
 
@@ -301,12 +302,13 @@
     updateReadout();
   }
 
+  // UI helpers
   function toggleFullscreen(){
     if(!document.fullscreenElement){ viewer.requestFullscreen?.(); }
     else { document.exitFullscreen?.(); }
   }
   function resetView(){
-    panZoom.resetZoom(); panZoom.center(); panZoom.fit(); updateScaleBar();
+    panZoom.resetZoom(); panZoom.center(); panZoom.fit(); updateScaleBar(); updateLabelView();
   }
   function toggleBackground(e){
     viewer.classList.toggle('transparent');
@@ -364,9 +366,9 @@
     scaleBar.style.width = (nice * realZoom) + 'px';
     if(UPM && UPM>0){
       const meters = nice / UPM;
-      scaleLabel.textContent = meters >= 1 ? meters.toFixed(2)+' m' : (meters*100).toFixed(0)+' cm';
+      scaleLabel.textContent = formatMeters(meters);
     } else {
-      scaleLabel.textContent = (Math.round(nice*1000)/1000) + ' SVG units';
+      scaleLabel.textContent = '—';
     }
   }
   function niceNumber(x){
@@ -376,8 +378,6 @@
     return n * Math.pow(10, exp);
   }
 
-  const savedUPM = parseFloat(localStorage.getItem('UNITS_PER_METER'));
-  if (isFinite(savedUPM) && savedUPM > 0) { window._UNITS_PER_METER = savedUPM; }
   updateScaleBar();
 })();
 </script>
