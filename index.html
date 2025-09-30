@@ -71,9 +71,8 @@
 <script>
 (async function(){
   // ========= Config =========
-  // If you know your drawing scale, set how many SVG units == 1 meter.
-  // If unknown, leave null and the scale bar will display "SVG units".
-  const UNITS_PER_METER = 155; // e.g., 1000 if 1 unit = 1 mm
+const UNITS_PER_METER = 154.99;     // your measured value
+window._UNITS_PER_METER = UNITS_PER_METER; // ensure runtime uses it
 
   const viewer = document.getElementById('viewer');
   const layersEl = document.getElementById('layers');
@@ -172,20 +171,28 @@
     });
   }
 
-  function updateScaleBar(){
-    if(!svgEl || !panZoom) return;
-    const zoom = panZoom.getZoom();
-    const targetPx = 160;
-    const units = targetPx / zoom;              // SVG units represented by targetPx at current zoom
-    const nice = niceNumber(units);             // 1/2/5×10^n
-    scaleBar.style.width = (nice * zoom) + 'px';
-    if(UNITS_PER_METER && UNITS_PER_METER>0){
-      const meters = nice / UNITS_PER_METER;
-      scaleLabel.textContent = formatMeters(meters);
-    } else {
-      scaleLabel.textContent = (Math.round(nice*1000)/1000) + ' SVG units';
-    }
+ function updateScaleBar(){
+  if(!svgEl || !panZoom) return;
+  const UPM = window._UNITS_PER_METER || UNITS_PER_METER; // prefer runtime override if present
+  const targetPx = 160;                                    // desired visual width
+  const { realZoom } = panZoom.getSizes();                 // px per 1 SVG unit (accounts for viewBox + zoom)
+
+  const units = targetPx / realZoom;                       // how many SVG units fit in targetPx right now
+  const nice = niceNumber(units);                          // 1/2/5×10^n “nice” tick
+
+  // draw bar in pixels (nice SVG units * px-per-unit)
+  scaleBar.style.width = (nice * realZoom) + 'px';
+
+  if (UPM && UPM > 0) {
+    const meters = nice / UPM;                             // convert SVG units → meters
+    scaleLabel.textContent = meters >= 1
+      ? meters.toFixed(2) + ' m'
+      : (meters * 100).toFixed(0) + ' cm';
+  } else {
+    scaleLabel.textContent = (Math.round(nice*1000)/1000) + ' SVG units';
   }
+}
+
   function niceNumber(x){
     const exp = Math.floor(Math.log10(x));
     const f = x / Math.pow(10, exp);
