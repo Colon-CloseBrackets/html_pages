@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plan Viewer (Measure v3)</title>
+<title>Plan Viewer (Layers + Background + Measure)</title>
 
 <script src="https://unpkg.com/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 
@@ -12,25 +12,26 @@
   html,body{height:100%;margin:0;background:#f5f5f7;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
   header{padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .btn{appearance:none;border:1px solid var(--ui-border);background:#fff;padding:8px 12px;border-radius:10px;cursor:pointer;box-shadow:var(--shadow)}
-  .wrap{height:calc(100% - 64px);display:grid;grid-template-columns:300px 1fr;gap:12px;padding:0 16px 16px}
+  .wrap{height:calc(100% - 64px);display:grid;grid-template-columns:320px 1fr;gap:12px;padding:0 16px 16px}
   .panel{background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;overflow:auto}
   .viewer{position:relative;background:#fff;border:1px solid var(--ui-border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
   .viewer.transparent{background:transparent}
   .viewer svg{width:100%;height:100%;display:block;touch-action:none}
-  .controls-top{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-  .layers{display:flex;flex-direction:column;gap:10px}
+  h3{margin:8px 0 6px;font-size:14px}
+  .group{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
   .row{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--ui-border);border-radius:8px;background:#fff}
   .row h4{margin:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .row input[type="range"]{width:100%}
+  .radio-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .overlay{position:absolute;left:10px;bottom:10px;display:grid;gap:6px;z-index:5}
   .scale{background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:10px;padding:8px 10px;box-shadow:var(--shadow);font-size:12px}
   .bar{height:6px;border-radius:4px;background:#000;margin-top:6px;position:relative}
   .bar::before,.bar::after{content:"";position:absolute;top:-6px;width:1px;height:18px;background:#000}
   .bar::before{left:0}.bar::after{right:0}
   .viewer:fullscreen,.viewer:-webkit-full-screen{width:100vw;height:100vh;border:none;border-radius:0}
-  /* HUD */
   .hud{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:10px;padding:6px 10px;font-size:12px;box-shadow:var(--shadow);z-index:6;display:none}
   .hud.show{display:block}
+  small.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#666}
 </style>
 </head>
 <body>
@@ -47,11 +48,20 @@
 
 <div class="wrap">
   <aside class="panel">
-    <div class="controls-top">
-      <button class="btn" id="show-all">Show all</button>
-      <button class="btn" id="hide-all">Hide all</button>
+    <div class="group">
+      <h3>Background</h3>
+      <div class="radio-row" id="bg-radios"><small class="mono">Loading…</small></div>
     </div>
-    <div class="layers" id="layers"></div>
+
+    <div class="group">
+      <h3>Layers</h3>
+      <div id="layers"><small class="mono">Loading…</small></div>
+    </div>
+
+    <div class="group">
+      <h3>UI Toggles</h3>
+      <div id="ui-toggles"><small class="mono">Any group with <code>data-ui="toggle"</code> or label starting <code>UI:</code> or <code>[ui]</code> will appear here.</small></div>
+    </div>
   </aside>
 
   <main class="viewer" id="viewer">
@@ -68,17 +78,19 @@
 <script>
 (async function(){
   // ========= Config =========
-  const UNITS_PER_METER = 40.96;     // Hardcoded so all users see correct meters
+  const UNITS_PER_METER = 40.96; // hardcoded scale (meters for everyone)
   window._UNITS_PER_METER = UNITS_PER_METER;
 
   const viewer = document.getElementById('viewer');
   const layersEl = document.getElementById('layers');
+  const togglesEl = document.getElementById('ui-toggles');
+  const bgRadiosEl = document.getElementById('bg-radios');
   const scaleBar = document.getElementById('scale-bar');
   const scaleLabel = document.getElementById('scale-label');
   const hud = document.getElementById('hud');
   let panZoom, svgEl;
 
-  // Load SVG
+  // Load SVG (updated name)
   const res = await fetch('28L_SitePlan_03.svg');
   if(!res.ok){ viewer.innerHTML = '<div style="padding:20px;color:#b00;">Failed to load SVG.</div>'; return; }
   const svgText = await res.text();
@@ -97,14 +109,14 @@
   panZoom.zoomBy(1);
   updateScaleBar();
 
-  // Build layer panel
+  // Build panels
+  buildBackgroundRadios();
   buildLayerPanel();
+  buildUIToggles();
 
   // Buttons
   document.getElementById('btn-fullscreen').onclick = toggleFullscreen;
   document.getElementById('reset-view').onclick = resetView;
-  document.getElementById('show-all').onclick = () => setAllLayersVisible(true);
-  document.getElementById('hide-all').onclick = () => setAllLayersVisible(false);
   document.getElementById('bg-toggle').onclick = toggleBackground;
 
   // ==== Measure tool ====
@@ -113,7 +125,7 @@
   let measureGroup = null;
   let poly = null;
   let dots = [];
-  let labelWrap = null;   // wrapper that we scale inversely to keep text readable
+  let labelWrap = null;
   let label = null;
   let liveSeg = null;
 
@@ -139,9 +151,8 @@
     const dm = parseFloat(prompt(`SVG distance: ${du.toFixed(3)} units\\nEnter REAL distance in meters:`) || '0');
     if (isFinite(dm) && dm>0) {
       const upm = du / dm;
-      // Session-only: do NOT persist, to keep hardcoded default for all users
-      window._UNITS_PER_METER = upm;
-      alert(`Calibrated (session) UNITS_PER_METER ≈ ${upm.toFixed(6)}\\n(This override is temporary for your browser tab)`);
+      window._UNITS_PER_METER = upm; // session-only override
+      alert(`Calibrated (session) UNITS_PER_METER ≈ ${upm.toFixed(6)}\\n(Temporary for this tab)`);
       updateReadout();
       updateScaleBar();
     }
@@ -260,39 +271,30 @@
     return d;
   }
 
+  function formatMeters(m){ return (m>=1) ? (m.toFixed(2)+' m') : ((m*100).toFixed(0)+' cm'); }
   function metersFromUnits(du){
     const UPM = window._UNITS_PER_METER || UNITS_PER_METER;
     return (UPM && UPM>0) ? (du/UPM) : null;
   }
-
-  function formatMeters(m){
-    return (m>=1) ? (m.toFixed(2)+' m') : ((m*100).toFixed(0)+' cm');
-  }
-
   function setReadouts(du){
     const m = metersFromUnits(du);
     const txt = (m==null) ? '—' : formatMeters(m);
     if (label) label.textContent = txt;
     hud.textContent = 'Length: ' + txt;
   }
-
   function moveSvgLabelTo(p){
     if(!labelWrap) return;
     const { realZoom } = panZoom.getSizes();
-    // Keep text readable: scale inversely with zoom and offset by 10px, -10px in screen space
     labelWrap.setAttribute('transform', `translate(${p.x},${p.y}) scale(${1/realZoom}) translate(10,-10)`);
   }
-
   function updateReadout(){
     const du = totalLength(pts);
     setReadouts(du);
     if (pts.length) moveSvgLabelTo(pts[pts.length-1]);
   }
-
   function updateLabelView(){
     if (pts.length) moveSvgLabelTo(pts[pts.length-1]);
   }
-
   function finalizeMeasure(){
     measureOn = false;
     document.getElementById('measure').textContent = 'Measure';
@@ -302,24 +304,53 @@
     updateReadout();
   }
 
-  // UI helpers
-  function toggleFullscreen(){
-    if(!document.fullscreenElement){ viewer.requestFullscreen?.(); }
-    else { document.exitFullscreen?.(); }
-  }
-  function resetView(){
-    panZoom.resetZoom(); panZoom.center(); panZoom.fit(); updateScaleBar(); updateLabelView();
-  }
-  function toggleBackground(e){
-    viewer.classList.toggle('transparent');
-    e.target.textContent = 'Background: ' + (viewer.classList.contains('transparent') ? 'Transparent' : 'White');
-  }
+  // ===== Background radios =====
+  function buildBackgroundRadios(){
+    const bg = svgEl.querySelector('g[inkscape\\:label="Background"][inkscape\\:groupmode="layer"]');
+    if(!bg){ bgRadiosEl.innerHTML = '<small class="mono">No layer labelled “Background”.</small>'; return; }
 
+    const aerial = bg.querySelector('#Aerial_image, g[inkscape\\:label="Aerial_image"], image#image1-4');
+    const plan   = bg.querySelector('#Plan, g[inkscape\\:label="Plan"], image#image1');
+    const blank  = bg.querySelector('#White, rect#White, [inkscape\\:label="White"]');
+
+    const options = [
+      {key:'aerial', label:'Aerial image', el:aerial},
+      {key:'plan',   label:'Plan',         el:plan},
+      {key:'blank',  label:'Blank',        el:blank},
+    ].filter(o => !!o.el);
+
+    if(!options.length){ bgRadiosEl.innerHTML = '<small class="mono">No Aerial/Plan/White elements found inside “Background”.</small>'; return; }
+
+    bgRadiosEl.innerHTML = '';
+    const name = 'bgChoice';
+    options.forEach((o, i) => {
+      const wrap = document.createElement('label'); wrap.style.display='inline-flex'; wrap.style.alignItems='center'; wrap.style.gap='6px';
+      const r = document.createElement('input'); r.type='radio'; r.name=name; r.value=o.key;
+      // Default selection: whichever is currently visible
+      const vis = isVisible(o.el);
+      if (vis || (i===0 && !options.some(x => isVisible(x.el)))) r.checked = true;
+      r.onchange = () => { if(r.checked){ options.forEach(x => setVisible(x.el, x===o)); } };
+      const span = document.createElement('span'); span.textContent = o.label;
+      wrap.appendChild(r); wrap.appendChild(span);
+      bgRadiosEl.appendChild(wrap);
+    });
+    // Apply initial choice
+    const chosen = bgRadiosEl.querySelector('input[type=radio]:checked');
+    if (chosen){ const opt = options.find(o => o.key===chosen.value); options.forEach(x => setVisible(x.el, x===opt)); }
+  }
+  function isVisible(el){ return !(el.style && el.style.display==='none'); }
+  function setVisible(el, show){ if(!el) return; el.style.display = show ? '' : 'none'; }
+
+  // ===== Layers (true Inkscape layers) =====
   function buildLayerPanel(){
     layersEl.innerHTML = '';
     const layerNodes = svgEl.querySelectorAll('g[inkscape\\:groupmode="layer"]');
     layerNodes.forEach((g, idx) => {
       const label = g.getAttribute('inkscape:label') || g.id || `Layer ${idx+1}`;
+      if (label === 'Background') return; // handled above with radios
+      // Optional: hide legacy "Source" if present, since Background replaces it
+      // if (label === 'Source') return;
+
       if(!g.id) g.id = `layer_${idx+1}`;
       const row = document.createElement('div'); row.className = 'row';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = (g.style.display !== 'none');
@@ -337,30 +368,56 @@
       layersEl.appendChild(row);
     });
   }
-
-  function setAllLayersVisible(show){
-    const layers = svgEl.querySelectorAll('g[inkscape\\:groupmode="layer"]');
-    layers.forEach(g => g.style.display = show ? '' : 'none');
-    layersEl.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = show);
-  }
-
   function soloLayer(target){
     const layers = svgEl.querySelectorAll('g[inkscape\\:groupmode="layer"]');
     const rows = layersEl.querySelectorAll('.row');
-    const alreadySolo = Array.from(layers).filter(g => g!==target && g.style.display==='none').length === (layers.length-1);
-    if(alreadySolo){ setAllLayersVisible(true); return; }
-    layers.forEach((g,i) => {
+    const list = Array.from(layers).filter(g => (g.getAttribute('inkscape:label')||'') !== 'Background');
+    const alreadySolo = list.filter(g => g!==target && g.style.display==='none').length === (list.length-1);
+    if(alreadySolo){ list.forEach(g => g.style.display=''); rows.forEach(r => r.querySelector('input[type="checkbox"]').checked = true); return; }
+    list.forEach((g,i) => {
       const show = (g===target);
       g.style.display = show ? '' : 'none';
       rows[i].querySelector('input[type="checkbox"]').checked = show;
     });
   }
 
+  // ===== UI Toggles (custom tags) =====
+  function buildUIToggles(){
+    // Any <g> (anywhere) with data-ui="toggle" OR label starting "UI:" or "[ui]"
+    const sel = 'g[data-ui="toggle"], g[inkscape\\:label^="UI:"], g[inkscape\\:label^="[ui]"]';
+    const nodes = svgEl.querySelectorAll(sel);
+    if(!nodes.length){ togglesEl.innerHTML = '<small class="mono">None detected. Add <code>data-ui="toggle"</code> to a group in Inkscape (Object Properties → Attributes), or start its label with <code>UI:</code> or <code>[ui]</code>.</small>'; return; }
+
+    togglesEl.innerHTML = '';
+    nodes.forEach((g, idx) => {
+      const label = (g.getAttribute('inkscape:label')||g.id||`Group ${idx+1}`).replace(/^UI:\s*|\[ui\]\s*/i,'');
+      const row = document.createElement('div'); row.className = 'row';
+      const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = (g.style.display !== 'none');
+      cb.onchange = () => { g.style.display = cb.checked ? '' : 'none'; };
+      const title = document.createElement('h4'); title.textContent = label; title.title = label;
+      const solo = document.createElement('button'); solo.className = 'btn'; solo.textContent = 'Solo';
+      solo.onclick = () => {
+        const set = Array.from(nodes);
+        const alreadySolo = set.filter(x => x!==g && x.style.display==='none').length === (set.length-1);
+        if(alreadySolo){ set.forEach(x => x.style.display=''); togglesEl.querySelectorAll('input[type="checkbox"]').forEach(c => c.checked=true); return; }
+        set.forEach((x,i) => { const show = (x===g); x.style.display = show? '' : 'none'; togglesEl.querySelectorAll('.row input[type="checkbox"]')[i].checked = show; });
+      };
+      row.appendChild(cb); row.appendChild(title); row.appendChild(solo);
+      togglesEl.appendChild(row);
+    });
+  }
+
+  // UI helpers
+  function toggleFullscreen(){ if(!document.fullscreenElement){ viewer.requestFullscreen?.(); } else { document.exitFullscreen?.(); } }
+  function resetView(){ panZoom.resetZoom(); panZoom.center(); panZoom.fit(); updateScaleBar(); updateLabelView(); }
+  function toggleBackground(e){ viewer.classList.toggle('transparent'); e.target.textContent = 'Background: ' + (viewer.classList.contains('transparent') ? 'Transparent' : 'White'); }
+
+  // Scale bar
   function updateScaleBar(){
     if(!svgEl || !panZoom) return;
     const UPM = window._UNITS_PER_METER || UNITS_PER_METER;
     const targetPx = 160;
-    const { realZoom } = panZoom.getSizes(); // px per SVG unit
+    const { realZoom } = panZoom.getSizes();
     const units = targetPx / realZoom;
     const nice = niceNumber(units);
     scaleBar.style.width = (nice * realZoom) + 'px';
@@ -378,7 +435,6 @@
     return n * Math.pow(10, exp);
   }
 
-  updateScaleBar();
 })();
 </script>
 </body>
